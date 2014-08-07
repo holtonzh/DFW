@@ -1,0 +1,146 @@
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <libxml/parser.h>
+#include <libxml/xmlmemory.h>
+
+#include "config.h"
+
+#define POLICY_PATH	"Policy.xml"
+#define CONFIG_PATH "agent.conf"
+
+int config_modify(const char *policyaddr, const char *logaddr)
+{
+	char buf[128] = {0};
+	FILE *fp = fopen(CONFIG_PATH, "r");
+	FILE *ftmp = fopen("config.tmp", "w");
+	if(fp == NULL)
+	{
+		printf("1\n");
+		return -1;
+	}
+	if(ftmp == NULL)
+	{
+		fclose(fp);
+		return -1;
+	}
+	while(fgets(buf, 128, fp) != NULL)
+	{
+		if(buf[0] == 0x0a) 
+			continue;
+		if((strstr(buf, "POLICYADDR") != NULL) || (strstr(buf, "LOGADDR") != NULL))
+			continue;
+		fprintf(ftmp, buf);
+	}
+	fprintf(ftmp, "LOGADDR=%s\n", logaddr);
+	fprintf(ftmp, "POLICYADDR=%s\n", policyaddr);
+	//if there is no POLICYADDR AND LOGADDR, needs write in
+	fclose(ftmp);
+	fclose(fp);
+	remove(CONFIG_PATH);
+	rename("config.tmp", CONFIG_PATH);
+	return 0;
+}
+
+int __addr_check(char *needle, char *value)
+{
+	char result[32] = {0};
+	if(get_item_value(result, needle) == NULL)
+	{
+		printf("patten not found\n");
+		return 0;
+	}
+	if(strcmp(value, (get_item_value(result, needle))) != 0)
+	{
+		printf("patten not match\n");
+		return 0;
+	}
+	printf("patten match, the %s is: %s\n", needle, result);
+	return 1;
+}
+
+
+void add_childnode(const xmlNodePtr root, const char* AccessType, const char* LinkType, const char* Protocol, const char * IP, const char * Src_Port, const char* Dst_Port)
+{
+	xmlNodePtr curNode;
+	curNode = xmlNewNode(NULL, BAD_CAST"Rule");
+	xmlAddChild(root, curNode);
+
+	xmlNewTextChild(curNode, NULL, BAD_CAST"AccessType", BAD_CAST(AccessType));
+	xmlNewTextChild(curNode, NULL, BAD_CAST"LiknType", BAD_CAST(LinkType));
+	xmlNewTextChild(curNode, NULL, BAD_CAST"Protocol", BAD_CAST(Protocol));
+	xmlNewTextChild(curNode, NULL, BAD_CAST"IP", BAD_CAST(IP));
+	xmlNewTextChild(curNode, NULL, BAD_CAST"Src_Port", BAD_CAST(Src_Port));
+	xmlNewTextChild(curNode, NULL, BAD_CAST"Dst_Port", BAD_CAST(Dst_Port));
+}
+
+int addr_check(char *logaddr, char *policyaddr, const char *serveraddr)
+{
+	xmlDocPtr	doc;
+	xmlNodePtr	root, curNode;
+	if( __addr_check("LOGADDR", logaddr) && __addr_check("POLICYADDR", policyaddr))
+	{
+		printf("go on download policy\n");
+		return 0;
+	}
+	//create policy xml
+	if(access(POLICY_PATH, F_OK) == 0)
+	{
+		if(unlink(POLICY_PATH) != 0)
+		{
+			return -1;
+		}
+	}
+	doc = xmlNewDoc(BAD_CAST"1.0");
+	root = xmlNewNode(NULL, BAD_CAST"Policys");
+	xmlDocSetRootElement(doc, root);
+	xmlNewProp(root, BAD_CAST"Status", BAD_CAST"1");
+	curNode = xmlNewNode(NULL, BAD_CAST"Policy");
+	xmlAddChild(root, curNode);
+	root = curNode;
+	xmlNewTextChild(root, NULL, BAD_CAST"PolicyType", BAD_CAST"REGULAR");
+	
+	add_childnode(root, "ALLOW", "OUT", "TCP", logaddr, "0", "80");	
+	add_childnode(root, "ALLOW", "IN", "TCP", logaddr, "80", "0");
+	add_childnode(root, "ALLOW", "OUT", "TCP", policyaddr, "0", "80");
+	add_childnode(root, "ALLOW", "IN", "TCP", policyaddr, "80", "0");
+	add_childnode(root, "ALLOW", "OUT", "TCP", serveraddr, "0", "80");
+	add_childnode(root, "ALLOW", "IN", "TCP", serveraddr, "80", "0");
+
+	int nRel = xmlSaveFile(POLICY_PATH, doc);
+	if(nRel == -1)
+	{
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+		return -1;
+	}	
+
+	xmlFreeDoc(doc);
+	xmlCleanupParser();
+	
+	if(config_modify(policyaddr, logaddr) != 0)
+	{
+		printf("modify agent.conf failed\n");
+	}
+	
+	return 1;
+}
+
+int main()
+{
+	
+	addr_check("192.12.2.2", "22.55.66.77", "192.194.23.56");
+	return 0;	
+}
+
+
+
+
+
+
+
+
+
+
+

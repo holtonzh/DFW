@@ -1,0 +1,452 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <linux/types.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <string.h>
+#include <pthread.h>
+#include <signal.h>
+
+#include <asm/types.h>
+#include <linux/netlink.h>
+#include <linux/socket.h>
+#include <time.h>
+
+#include <netinet/in.h>
+#include <libxml/parser.h>
+#include <libxml/tree.h>
+
+#include <curl/curl.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/sem.h>
+
+#include "linux_list.h"
+#include "match_rule.h"
+#include "ipc.h"
+#include "config.h"
+#include "runlog.h"
+#include "ConnToServer.h"
+
+#define LOG_PATH "log.xml"
+#define MINUTE 60
+#define NODE_EXIST 1
+#define NODE_NOT_EXIST 0
+#define SERVERADDR_PATH	"server_addr.xml"
+
+
+static int skfd;
+static int sem_id = 0;
+
+union semun
+{
+	int val;
+	struct semid_ds *buf;
+	unsigned short *array;
+};
+
+
+static int set_semvalue()
+{
+	union semun sem_union;
+
+	sem_union.val = 1;
+	if(semctl(sem_id, 0, SETVAL, sem_union) == -1)
+		return 0;
+	return 1;		
+}
+
+static void del_semvalue()
+{
+	printf("sem_id[%d]\n", sem_id);
+	union semun sem_union;
+	if(semctl(sem_id, 0, IPC_RMID, sem_union) == -1)
+		fprintf(stderr, "Failed to delete semaphore\n");
+}
+
+static int semaphore_p()
+{
+	struct sembuf sem_b;
+	sem_b.sem_num = 0;
+	sem_b.sem_op = -1;
+	sem_b.sem_flg = SEM_UNDO;
+	if(semop(sem_id, &sem_b, 1) == -1)
+	{
+		fprintf(stderr, "semaphore_p failed\n");
+		return -1;
+	}
+	return 0;
+}
+
+static int semaphore_v()
+{
+	struct sembuf sem_b;
+	sem_b.sem_num = 0;
+	sem_b.sem_op = 1;
+	sem_b.sem_flg = SEM_UNDO;
+	if(semop(sem_id, &sem_b, 1) == -1)
+	{
+		fprintf(stderr, "semapore_v failed\n");
+		return -1;
+	}
+	return 0;
+}
+
+int xml_create(struct log_info *log);
+
+static void sig_int(int signo)
+{
+	printf("netlink stop \n");
+    struct sockaddr_nl kpeer;
+    struct msg_to_kernel message;
+
+    memset(&kpeer, 0, sizeof(kpeer));
+    kpeer.nl_family = AF_NETLINK;
+    kpeer.nl_pid = 0;
+    kpeer.nl_groups = 0;
+
+    memset(&message, 0, sizeof(message));
+    message.hdr.nlmsg_len = NLMSG_LENGTH(0);
+    message.hdr.nlmsg_flags = 0;
+    message.hdr.nlmsg_type = U_CLOSE;
+    message.hdr.nlmsg_pid = getpid();
+
+    sendto(skfd, &message, message.hdr.nlmsg_len, 0, (struct sockaddr *)(&kpeer),
+         sizeof(kpeer));
+
+    close(skfd);
+	del_semvalue();
+
+    exit(0);
+}
+
+static void sig_int_upload(int signo)
+{	
+	printf("child stop\n");
+	curl_global_cleanup();
+	del_semvalue();
+	exit(0);
+}
+
+int match_record() 
+{
+	struct sockaddr_nl	sa_nl_user;
+	struct sockaddr_nl	sa_nl_kernel;
+
+	struct msg_to_kernel	message;
+	struct u_tuple_info	u_tuple;
+	
+	int			sa_nl_len;
+	int 		recvlen;
+	
+	skfd = socket(PF_NETLINK, SOCK_RAW, NL_MSG);
+	if (skfd < 0)
+	{
+		runlog(LOG_ERR,  "Error: Netlink Start Failure.");
+		return -1;
+	}
+
+	memset(&sa_nl_user, 0, sizeof(sa_nl_user));
+	sa_nl_user.nl_family = AF_NETLINK;
+	sa_nl_user.nl_pid = getpid();
+	sa_nl_user.nl_groups = 0;
+
+	if(bind(skfd, (struct sockaddr*)&sa_nl_user, sizeof(sa_nl_user)) != 0)
+	{
+		runlog(LOG_ERR, "Error: Netlink Start Failure.");
+		return -1;
+	}
+
+	signal(SIGINT, sig_int);
+
+	memset(&sa_nl_kernel, 0, sizeof(sa_nl_kernel));
+	sa_nl_kernel.nl_family = AF_NETLINK;
+	sa_nl_kernel.nl_pid = 0;
+	sa_nl_kernel.nl_groups = 0;
+
+	memset(&message, 0, sizeof(message));
+	message.hdr.nlmsg_len = NLMSG_LENGTH(0);
+	message.hdr.nlmsg_flags = 0;
+	message.hdr.nlmsg_type = U_PID;
+	message.hdr.nlmsg_pid = sa_nl_user.nl_pid;
+
+	sendto(skfd, &message, message.hdr.nlmsg_len, 0, (struct sockaddr*)&sa_nl_kernel, sizeof(sa_nl_kernel));
+
+	sa_nl_len = sizeof(struct sockaddr_nl);	
+
+	while(1)
+	{
+		recvlen = recvfrom(skfd, &u_tuple, sizeof(struct u_tuple_info ), 0, (struct sockaddr*)&sa_nl_kernel, (socklen_t*)&sa_nl_len);
+		if (u_tuple.hdr.nlmsg_type == NL_MSG)
+		{	
+			semaphore_p();
+			if(xml_create(&u_tuple.tuple) == -1)
+			{
+				runlog(LOG_ERR,  "Error: Log File Create Failure.");
+			}
+			semaphore_v();
+		}
+	}
+
+return 0;
+
+}
+
+int xml_create(struct log_info *log)
+{
+	xmlDocPtr doc;
+	xmlNodePtr curNode;
+	xmlNodePtr root;
+	int flag = NODE_NOT_EXIST;
+	struct in_addr addr;
+	struct in_addr daddr;
+	time_t t;
+	struct tm *ptm;
+	char date[20];
+	char agent_ip[20] = {0};
+	if(get_agentIP(agent_ip, sizeof(agent_ip)-1))
+	{
+		return -1;
+	}
+ 
+	xmlKeepBlanksDefault (0);
+	doc = xmlReadFile(LOG_PATH, "UTF-8", XML_PARSE_RECOVER);
+	
+	if(NULL == doc)
+	{
+		doc = xmlNewDoc(BAD_CAST"1.0");
+		root = xmlNewNode(NULL, BAD_CAST"AgentLog");
+		xmlDocSetRootElement(doc, root);
+		xmlNewTextChild(root, NULL, BAD_CAST"Agent_IP", BAD_CAST(agent_ip));		
+		int nRel = xmlSaveFile(LOG_PATH, doc);
+		if(nRel == -1)
+		{
+			printf("failed\n");
+			xmlFreeDoc(doc);
+			xmlCleanupParser();	
+			return -1;
+		}
+	}
+	root = xmlDocGetRootElement(doc);
+
+	if(NULL == root)
+	{
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+		return -1;
+	}
+
+	//如果不是XML该怎么处理？
+	if(xmlStrcmp(root->name, BAD_CAST"AgentLog"))
+	{
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+		return -1;
+	}
+
+
+	curNode = root->xmlChildrenNode;
+	while(curNode != NULL)
+	{
+		if(!xmlStrcmp(curNode->name, BAD_CAST"AccessLogs"))
+		{
+			flag = NODE_EXIST;
+		}
+		curNode = curNode->next;
+	}
+
+	if(flag == NODE_NOT_EXIST)
+	{
+		curNode = xmlNewNode(NULL, BAD_CAST"AccessLogs");
+		xmlAddChild(root, curNode);
+		xmlSaveFile(LOG_PATH, doc);
+	}
+	curNode = root->xmlChildrenNode;
+
+	while(curNode != NULL)
+	{
+		if(!xmlStrcmp(curNode->name, BAD_CAST"AccessLogs"))
+		{
+			char port[5];
+			xmlNodePtr node_Accesslog;
+			
+			node_Accesslog = xmlNewNode(NULL, BAD_CAST"AccessLog");
+			xmlAddChild(curNode, node_Accesslog);
+			
+			curNode = node_Accesslog;
+			//xmlSetPort(curNode, BAD_CAST"ID", BAD_CAST"id");
+			memcpy(&addr, &(log->saddr), 4);
+			xmlNewTextChild(curNode, NULL, BAD_CAST"saddr", BAD_CAST(inet_ntoa(addr)));
+			memcpy(&daddr, &(log->daddr), 4);
+			xmlNewTextChild(curNode, NULL, BAD_CAST"daddr", BAD_CAST(inet_ntoa(daddr)));
+			sprintf(port, "%d", ntohs(log->sport));
+			xmlNewTextChild(curNode, NULL, BAD_CAST"sport", BAD_CAST(port));
+			memset(port, 0, sizeof(port));
+			sprintf(port, "%d", ntohs(log->dport));
+			xmlNewTextChild(curNode, NULL, BAD_CAST"dport", BAD_CAST(port));
+			xmlNewTextChild(curNode, NULL, BAD_CAST"protocol", BAD_CAST(log->proto == 6 ? "TCP": "UDP"));
+			xmlNewTextChild(curNode, NULL, BAD_CAST"action", BAD_CAST(log->action == 1? "ACCEPT":(log->action == 0? "DROP" : "TEST")));
+			time(&t);
+			ptm = localtime(&t);
+			sprintf(date, "%d-%d-%d %d:%d:%d", ptm->tm_year+1900, ptm->tm_mon+1, ptm->tm_mday, ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+			xmlNewTextChild(curNode, NULL, BAD_CAST"time", BAD_CAST(date));
+			break;
+		}
+		curNode = curNode->next;
+	} 
+
+	int nRel = xmlSaveFile(LOG_PATH, doc);
+	if(nRel == -1)
+	{
+		xmlFreeDoc(doc);
+		xmlCleanupParser();	
+		return -1;
+	}
+	xmlFreeDoc(doc);
+	xmlCleanupParser();
+	return 0;
+}
+
+static size_t read_callback(void *ptr, size_t size, size_t nmemb, void *stream)
+{
+	size_t retcode;
+	curl_off_t	nread;
+
+	retcode = fread(ptr, size, nmemb, stream);
+	nread = (curl_off_t)retcode;
+	fprintf(stderr, "read %" CURL_FORMAT_CURL_OFF_T "bytes from file\n", nread);
+	
+	return retcode;
+}
+
+int put_log(const char *log_path, const char *url)
+{
+	CURL *curl;
+	CURLcode res;
+	FILE *hd_src;
+	struct stat file_info;
+
+	stat(log_path, &file_info);
+
+	hd_src = fopen(log_path, "rb");
+
+	curl_global_init(CURL_GLOBAL_NOTHING);
+
+	curl = curl_easy_init();
+
+	if(curl)
+	{
+		curl_easy_setopt(curl, CURLOPT_READFUNCTION, read_callback);
+		curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+		curl_easy_setopt(curl, CURLOPT_PUT, 1L);
+		curl_easy_setopt(curl, CURLOPT_URL, url);
+		curl_easy_setopt(curl, CURLOPT_READDATA, hd_src);
+
+		curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)file_info.st_size);
+
+		res = curl_easy_perform(curl);
+		
+		if(res != CURLE_OK)
+		{
+			fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+		}
+		//curl_free(curl);
+		curl_easy_cleanup(curl);	
+	}
+	fclose(hd_src);
+	curl_global_cleanup();
+	return 0;
+}
+
+void sig_alarm(int signo)
+{		
+	char server_addr[64];
+	char logurl[64] = {0};
+	char curl_url[256] = {0};
+	
+
+	if(get_item_value(logurl, "SERVER_ADDR") == NULL)
+	{
+		runlog(LOG_ERR, "Error: Server address config failure");
+	}
+
+	if(get_item_value(logurl, "LOG_URL") == NULL)
+	{
+		runlog(LOG_ERR, "Error: Server url config failure");
+	}
+	
+	sprintf(curl_url, "http://%s%s", server_addr, logurl);
+
+	semaphore_p();
+	if(access(LOG_PATH, F_OK) == 0)
+	{
+		put_log(LOG_PATH, curl_url);
+	//	remove(LOG_PATH);
+	}
+	semaphore_v();
+}
+
+unsigned int alarm_rewrite(unsigned int nsecs)
+{
+	struct sigaction newact,oldact;
+	unsigned int unslept;
+	
+	newact.sa_handler = sig_alarm;
+	sigemptyset(&newact.sa_mask);
+	newact.sa_flags = 0;
+	sigaction(SIGALRM, &newact, &oldact);
+
+	alarm(nsecs);
+	pause();
+
+	unslept = alarm(0);
+	sigaction(SIGALRM, &oldact, NULL);
+
+	return unslept;
+}
+
+void upload()
+{
+	signal(SIGINT, sig_int_upload);
+	while(1)
+	{
+		alarm_rewrite(24*60*MINUTE);
+	}
+	return (void)0;
+}
+
+
+int main()
+{	
+	daemon(1, 0);
+	key_t	key;
+	if(access(LOG_PATH, F_OK) != 0)
+	{
+		fclose(fopen(LOG_PATH, "w"));
+	}
+	key = ftok(LOG_PATH, 1);
+	if(key < 0)	
+		printf("ftop failed\n");
+	remove(LOG_PATH);
+	sem_id = semget(key, 1, 0666 | IPC_CREAT);
+	set_semvalue();
+
+	pid_t pid;
+	if((pid = fork()) < 0)
+	{
+		printf("fork error\n");
+	}
+	
+	if(pid == 0)
+	{
+		upload();
+		
+	}
+	if(pid > 0)
+	{
+		match_record();
+	}
+	return 0;
+}

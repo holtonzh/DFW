@@ -1,0 +1,86 @@
+#include "config.h"
+#include "syslog.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+
+#include <unistd.h>
+#include <netdb.h>
+
+#define BUFSIZE	128
+#define PATH "agent.conf"
+
+char* get_item_value(char *value, char* item)
+{	
+	//static char value[30];
+	char buf[BUFSIZE];
+	char *saveptr;
+	char *token;
+	char *p = value;
+	memset(buf, 0, BUFSIZE);
+	FILE *fp = fopen(PATH,"r");
+	if(NULL == fp)
+	{	
+		return NULL;
+	}
+	while(fgets(buf, BUFSIZE, fp) != NULL)
+	{	
+		buf[strlen(buf)-1] = '\0';
+		token = strtok_r(buf,"=",&saveptr);
+		if(!strcmp(token,item))
+		{
+			if((token = strtok_r(NULL,"=",&saveptr)) != NULL)
+				fclose(fp);
+			while((*p++ = *token++) && (*token));
+			return value;
+		}
+	}
+	fclose(fp);
+	return NULL;
+}
+
+int get_agentIP(char *agentIP, int len)
+
+{
+
+  int		socket_fd;
+  struct	sockaddr_in *sin;
+  struct	ifreq *ifr;
+  struct	ifconf conf;
+  char		buff[BUFSIZ];
+  int 		num;
+  int 		i;
+
+  socket_fd = socket(AF_INET,SOCK_DGRAM,0);
+  
+  conf.ifc_len = BUFSIZ;
+  conf.ifc_buf = buff;
+ 
+  ioctl(socket_fd,SIOCGIFCONF,&conf);
+  num = conf.ifc_len / sizeof(struct ifreq);
+  ifr = conf.ifc_req;
+  //printf("num=%d\n",num);
+
+  for(i=0;i<num;i++)
+  {
+    struct sockaddr_in *sin = (struct sockaddr_in *)(&ifr->ifr_addr);
+
+    ioctl(socket_fd,SIOCGIFFLAGS,ifr);
+    if(((ifr->ifr_flags & IFF_LOOPBACK) == 0) && (ifr->ifr_flags & IFF_UP))
+    {
+      printf("%s(%s)\n",ifr->ifr_name,inet_ntoa(sin->sin_addr));
+      strncpy(agentIP, inet_ntoa(sin->sin_addr), len-1);
+      agentIP[len-1] = '\0';
+      return 0;
+    }
+    ifr++;
+  }
+  return 1;
+
+}
+

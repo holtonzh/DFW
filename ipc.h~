@@ -1,0 +1,28 @@
+#ifndef IPC_H
+#define IPC_H
+
+#define NL_MSG		21
+#define U_PID 		22
+#define U_CLOSE		23
+
+#include <linux/netlink.h>
+#include "linux_list.h"
+#include "match_rule.h"
+
+struct msg_to_kernel
+{
+	struct nlmsghdr 	hdr;
+};
+
+struct u_tuple_info {
+	struct nlmsghdr		hdr;
+	struct log_info		tuple;
+};
+
+extern int match_record(void);
+extern int send_to_user(struct tuple_info *tuple, int action);
+extern int netlink_init(void);
+extern void netlink_exit(void);
+extern int get_agentIP(char *agentIP, int len);
+
+#endif

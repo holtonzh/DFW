@@ -1,0 +1,51 @@
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+
+#include "runlog.h"
+
+#define PATH "log.xml"
+#define MINUTE 60
+
+void sig_alarm(int signo)
+{		
+	if(!access(PATH, F_OK))
+	{
+		char* str
+		if(0 !=system("curl -T log.xml http://10.109.34.118/parse_log_test.php"))
+		{
+			runlog(LOG_ERR, __func__, "Agent Log Upload Failure");
+			return;
+		}
+		unlink(PATH);
+	}	
+}
+
+unsigned int alarm_rewrite(unsigned int nsecs)
+{
+	struct sigaction newact,oldact;
+	unsigned int unslept;
+	
+	newact.sa_handler = sig_alarm;
+	sigemptyset(&newact.sa_mask);
+	newact.sa_flags = 0;
+	sigaction(SIGALRM, &newact, &oldact);
+
+	alarm(nsecs);
+	pause();
+
+	unslept = alarm(0);
+	sigaction(SIGALRM, &oldact, NULL);
+
+	return unslept;
+}
+
+
+void* main(void *arg)
+{
+	daemon(1,0);
+	while(1)
+	{
+		alarm_rewrite(5*MINUTE);
+	}
+}

@@ -1,0 +1,66 @@
+#! /bin/sh
+#chkconfig:2345 80 05
+
+#description:matchd
+
+
+MATCH_PATH="/usr/local/baidu/nf_match-1.0"
+
+case $1 in
+start)
+	echo "starting matchd..."
+	if [ ! -d $MATCH_PATH ]
+	then
+		echo "file path $MATCH_PATCH not found."
+		exit 1 
+	fi
+	if ([ ! -f "$MATCH_PATH"/agentlog ] || [ ! -f "$MATCH_PATH"/agentlog ] || [ ! -f "$MATCH_PATH"/agentlog ])
+	then
+		echo "File is corrupted."
+		echo "start failure"
+		exit 1
+	fi
+	cd /usr/local/baidu/nf_match-1.0
+	if (! lsmod | grep nf_match > /dev/null) 
+	then
+		insmod nf_match.ko
+	fi
+	if (! ps -e | grep agentlog > /dev/null)
+	then
+		./agentlog
+	fi
+	if (! ps -e | grep parsexml > /dev/null) 
+	then
+		./parsexml
+	fi
+	;;
+
+stop)
+	echo "stoping matchd..."
+	if (ps -e | grep agentlog > /dev/null)
+	then
+		kill `pidof agentlog`
+	fi
+	if (ps -e | grep parsexml > /dev/null)
+	then
+		kill `pidof parsexml`
+	fi
+	if (lsmod | grep nf_match > /dev/null)
+	then
+		rmmod nf_match.ko
+	fi
+	;;
+
+restart)
+	echo "restarting matchd..."
+	stop
+	start
+	;;
+
+	*)
+	echo "Usage:$0{start|stop|restart}"
+	exit 1
+	;;
+	esac
+
+

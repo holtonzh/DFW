@@ -1,0 +1,127 @@
+#ifndef RUNLOG_H
+#define RUNLOG_H
+
+
+#include <time.h>
+#include <sys/syslog.h>
+#include "libxml/parser.h"
+#include "libxml/tree.h"
+#include "config.h"
+
+#define NODE_EXIST 1
+#define NODE_NOT_EXIST 0
+
+
+void write_syslog(int priority, const char* description)
+{
+	openlog("matchd", LOG_ODELAY|LOG_PID, LOG_USER);
+	syslog(priority, "%s",  description);
+	closelog();		
+}
+
+int runlog(int priority, const char* description)
+{
+	printf("invoke runlog\n");
+	write_syslog(priority, description);
+	xmlDocPtr doc;
+	xmlNodePtr curNode;
+	xmlNodePtr root;
+	time_t t;
+	struct tm *ptm;
+	int flag = NODE_NOT_EXIST;
+	char date[20];
+	xmlKeepBlanksDefault (0);
+	doc = xmlReadFile(LOG_PATH, "UTF-8", XML_PARSE_RECOVER);
+	
+	if(NULL == doc)
+	{
+		char agent_ip[20] = {0};
+		if(get_agentIP(agent_ip, sizeof(agent_ip)-1))
+		{
+			sprintf(agent_ip, "%s", "127.0.0.0");
+		}
+		doc = xmlNewDoc(BAD_CAST"1.0");
+		root = xmlNewNode(NULL, BAD_CAST"AgentLog");
+		xmlDocSetRootElement(doc, root);
+		xmlNewTextChild(root, NULL, BAD_CAST"Agent_IP", BAD_CAST(agent_ip));		
+		int nRel = xmlSaveFile(LOG_PATH, doc);
+		if(nRel == -1)
+		{
+			printf("failed\n");
+			xmlFreeDoc(doc);
+			xmlCleanupParser();	
+			return -1;
+		}
+	}
+	root = xmlDocGetRootElement(doc);
+
+	if(NULL == root)
+	{
+		printf("get root element failed");
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+		return -1;
+	}
+
+	//如果不是XML该怎么处理？
+	if(xmlStrcmp(root->name, BAD_CAST"AgentLog"))
+	{
+		printf("document of the wrong type, root node != AgentLog");
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+		return -1;
+	}
+
+
+	curNode = root->xmlChildrenNode;
+
+	while(curNode != NULL)
+	{
+		if(!xmlStrcmp(curNode->name, BAD_CAST"RunLogs"))
+		{
+			flag = NODE_EXIST;
+		}
+		curNode = curNode->next;
+	}
+
+	if(flag == NODE_NOT_EXIST)
+	{
+		curNode = xmlNewNode(NULL, BAD_CAST"RunLogs");
+		xmlAddChild(root, curNode);
+		xmlSaveFile(LOG_PATH, doc);
+	}
+	curNode = root->xmlChildrenNode;
+	while(curNode != NULL)
+	{
+		if(!xmlStrcmp(curNode->name, BAD_CAST"RunLogs"))
+		{
+			xmlNodePtr node_Runlog;
+			
+			node_Runlog = xmlNewNode(NULL, BAD_CAST"RunLog");
+			xmlAddChild(curNode, node_Runlog);
+			curNode = node_Runlog;
+			//xmlSetPort(curNode, BAD_CAST"ID", BAD_CAST"id");
+			xmlNewTextChild(curNode, NULL, BAD_CAST"desciption", BAD_CAST(description));
+			time(&t);
+			ptm = localtime(&t);
+			sprintf(date, "%d-%d-%d %d:%d:%d", ptm->tm_year+1900, ptm->tm_mon+1, ptm->tm_mday, ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+			xmlNewTextChild(curNode, NULL, BAD_CAST"date", BAD_CAST(date));
+			break;
+		}
+		curNode = curNode->next;
+	} 
+
+	int nRel = xmlSaveFile(LOG_PATH, doc);
+	if(nRel == -1)
+	{
+		printf("failed\n");
+		xmlFreeDoc(doc);
+		xmlCleanupParser();	
+		return -1;
+	}
+	xmlFreeDoc(doc);
+	xmlCleanupParser();
+	return 0;
+}
+
+#endif

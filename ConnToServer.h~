@@ -1,0 +1,20 @@
+#ifndef CONNTOSERVER_H
+#define CONNTOSERVER_H
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <stdio.h>
+#include <arpa/inet.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include "ConnToServer.h"
+#include "config.h"
+#include "syslog.h"
+
+extern int ConnToServer(const char * URL, const char * file_path, const char* addr, int flag);
+
+#endif
+
